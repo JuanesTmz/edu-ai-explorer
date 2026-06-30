@@ -298,6 +298,35 @@ section[data-testid="stSidebar"] .stButton > button:hover {
 .unesco-link { display:inline-block; margin-top:20px; font-size:.85rem; font-weight:600; color:var(--primary); text-decoration:none; }
 .unesco-link:hover { text-decoration:underline; }
 
+/* ── READONLY SCROLL (completados en modo vista) ── */
+.st-key-chat_scroll_readonly {
+    background:#FFFFFF;
+    padding:0 !important;
+    border-radius:0 !important;
+}
+.st-key-chat_scroll_readonly > div { gap:0 !important; }
+
+/* ── BANNER MODO VISTA ── */
+.readonly-banner {
+    display:flex; align-items:center; gap:9px;
+    background:#FFFBEA; border:1.5px solid #E8C90A;
+    border-radius:10px; padding:9px 15px; margin-bottom:10px;
+    font-size:.76rem; color:#5C4A00; font-weight:500;
+}
+.readonly-banner .rb-icon { font-size:.95rem; flex-shrink:0; }
+
+/* ── SIDEBAR BACK BUTTON ── */
+.st-key-go_menu > button {
+    background:#F4F6FB !important;
+    color:var(--text-muted) !important;
+    border:1px dashed var(--border) !important;
+}
+.st-key-go_menu > button:hover {
+    background:#EEF8FF !important;
+    color:#0A6A96 !important;
+    border-color:#35BFFF !important;
+}
+
 /* ── REFLECTION (end screen) ── */
 .reflect-shell { max-width:760px; margin:24px auto 0; }
 .reflect-panel { background:linear-gradient(135deg,#FFFFFF,#F9FBFF); border:1px solid var(--border); border-radius:24px; box-shadow:0 16px 48px rgba(27,35,64,.08); padding:32px; }
@@ -320,6 +349,8 @@ defaults = {
     "shown_layers": set(),
     "just_completed": False,
     "pending_next": None,
+    "viewing_exp": None,
+    "exp_snapshots": {},
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -369,8 +400,37 @@ def maybe_tip(node: dict):
         st.toast(build_meta_tip(node), icon="💬")
 
 
+def save_active_snapshot():
+    """Guarda el estado de la expedición activa para poder retomarla después."""
+    n = st.session_state.current_exp
+    if n is None:
+        return
+    st.session_state.exp_snapshots[n] = {
+        "history": list(st.session_state.history),
+        "current_node": st.session_state.current_node,
+        "shown_layers": set(st.session_state.shown_layers),
+        "just_completed": st.session_state.just_completed,
+        "pending_next": st.session_state.pending_next,
+    }
+
+
+def go_to_menu():
+    save_active_snapshot()
+    st.session_state.viewing_exp = None
+
+
+def view_expedition(n: int):
+    """Muestra la expedición n. Si es la activa, retoma donde se quedó;
+    si es otra (ya completada), guarda la activa y la abre en modo lectura."""
+    if n != st.session_state.current_exp:
+        save_active_snapshot()
+    st.session_state.viewing_exp = n
+
+
 def start_expedition(n: int):
+    save_active_snapshot()
     st.session_state.current_exp = n
+    st.session_state.viewing_exp = n
     st.session_state.current_node = "inicio"
     st.session_state.history = []
     st.session_state.shown_layers = set()
@@ -457,6 +517,42 @@ def render_chat_header(n: int):
     </div>
     <div class="ch-status"><span class="ch-dot"></span>Inteligencia visitante · en línea</div>
   </div>
+</div>
+""", unsafe_allow_html=True)
+
+
+def render_completed_expedition_view(n: int):
+    """Vista de solo lectura: muestra la conversación completa ya tenida en una expedición."""
+    exp = EXPEDICIONES[n]
+    snap = st.session_state.exp_snapshots.get(n, {})
+    history = snap.get("history", [])
+
+    st.markdown("""
+<div class="readonly-banner">
+  <span class="rb-icon">📖</span>
+  <span>Estás revisando una conversación ya completada. Usa el menú lateral para navegar a otra expedición.</span>
+</div>
+""", unsafe_allow_html=True)
+
+    render_chat_header(n)
+
+    with st.container(key="chat_scroll_readonly", height=420, border=False, autoscroll=False):
+        parts = []
+        for i, msg in enumerate(history):
+            if msg["type"] == "agent":
+                parts.append(agent_bubble_html(n, msg["content"], i))
+            elif msg["type"] == "user":
+                parts.append(user_bubble_html(n, msg["content"], i))
+        st.markdown(f'<div class="chat-body">{"".join(parts)}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="chat-cap"></div>', unsafe_allow_html=True)
+
+    badge = exp["badge"]
+    st.markdown(f"""
+<div class="badge-card">
+  <span class="badge-emoji">{badge['icono']}</span>
+  <h3>Insignia obtenida</h3>
+  <div class="badge-name">{badge['nombre']}</div>
+  <div class="badge-sub">Expedición {n} completada</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -600,11 +696,17 @@ with st.sidebar:
 <div class="sb-list-label">Expediciones</div>
 """, unsafe_allow_html=True)
 
+    if st.session_state.viewing_exp is not None:
+        if st.button("← Menú principal", key="go_menu"):
+            go_to_menu()
+            st.rerun()
+
     for num in range(1, 6):
         exp = EXPEDICIONES[num]
         status = get_status(num)
         badge = exp["badge"]
         prog_pct = int(current_progress(num) * 100)
+        is_viewing = st.session_state.viewing_exp == num
 
         if status == "completed":
             icon = badge["icono"]
@@ -651,7 +753,15 @@ with st.sidebar:
 </div>
 """, unsafe_allow_html=True)
 
-        if status == "unlocked":
+        if status == "completed" and not is_viewing:
+            if st.button(f"↩ Ver expedición {num}", key=f"view_{num}"):
+                view_expedition(num)
+                st.rerun()
+        elif status == "active" and not is_viewing:
+            if st.button(f"▶ Continuar expedición {num}", key=f"cont_{num}"):
+                view_expedition(num)
+                st.rerun()
+        elif status == "unlocked":
             if st.button(f"▶ Iniciar expedición {num}", key=f"start_{num}"):
                 start_expedition(num)
                 st.rerun()
@@ -669,14 +779,24 @@ with st.sidebar:
 
 
 # ── MAIN AREA ──────────────────────────────────────────────────────────────────
-if st.session_state.current_exp is None:
+if st.session_state.viewing_exp is None:
     render_start_screen()
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
-        if st.button("Comenzar la expedición", key="begin", use_container_width=True):
-            start_expedition(1)
-            st.rerun()
+        cur = st.session_state.current_exp
+        if cur is None:
+            if st.button("Comenzar la expedición", key="begin", use_container_width=True):
+                start_expedition(1)
+                st.rerun()
+        else:
+            exp_label = EXPEDICIONES[cur]["titulo"]
+            if st.button(f"Continuar → Expedición {cur}: {exp_label}", key="continue_from_menu", use_container_width=True):
+                view_expedition(cur)
+                st.rerun()
+
+elif st.session_state.viewing_exp != st.session_state.current_exp:
+    render_completed_expedition_view(st.session_state.viewing_exp)
 
 else:
     n = st.session_state.current_exp
@@ -748,6 +868,7 @@ else:
                     render_reflection_screen()
                     if st.button("Volver al inicio", key="restart", use_container_width=True):
                         st.session_state.current_exp = None
+                        st.session_state.viewing_exp = None
                         st.rerun()
 
         # Response options
